@@ -537,15 +537,16 @@ void LoggerDemo::demonstrateCollectionAndMixedTypes()
     // 10. QByteArray
     QT_LOG_ALWAYS("10. QByteArray:");
     QByteArray byteData = "Raw byte data";
-    QT_LOG_INFO("QByteArray: {}", qt_spdlog::formatters::formatQByteArray(byteData));
+    QT_LOG_INFO("QByteArray (text): {}", qt_spdlog::formatters::formatQByteArray(byteData));
     QT_LOG_INFO("QByteArray (hex): {}", qt_spdlog::formatters::formatQByteArray(byteData, true));
 
     QByteArray hexData = QByteArray::fromHex("48656c6c6f20576f726c64");
-    QT_LOG_WARN("Hex QByteArray: {}", hexData);
+    QT_LOG_WARN("Hex QByteArray (hex): {}", qt_spdlog::formatters::formatQByteArray(hexData, true));
     QT_LOG_WARN("Hex QByteArray (text): {}", qt_spdlog::formatters::formatQByteArray(hexData, false));
 
     QByteArray binaryData = QByteArray::fromHex("0102030405060708");
-    QT_LOG_INFO("Binary QByteArray: {}", qt_spdlog::formatters::formatQByteArray(binaryData, true));
+    QT_LOG_INFO("Binary QByteArray (hex): {}", qt_spdlog::formatters::formatQByteArray(binaryData, true));
+    QT_LOG_INFO("Binary QByteArray (text): {}", qt_spdlog::formatters::formatQByteArray(binaryData, false));
 
     QT_LOG_ALWAYS("=== ДЕМОНСТРАЦИЯ КОЛЛЕКЦИЙ ЗАВЕРШЕНА ===\n");
 }

@@ -91,7 +91,7 @@ void runInteractiveMode(LoggerDemo& loggerDemo)
             std::cout << "Запуск всех тестов...\n";
             loggerDemo.demonstrateAllScenarios();
         }
-        else if (command >= 1 && command <= 17) {
+        else if (command >= 1 && command <= 18) {
             std::cout << "Запуск теста #" << command << "...\n";
             loggerDemo.runSpecificTest(command - 1);
         }

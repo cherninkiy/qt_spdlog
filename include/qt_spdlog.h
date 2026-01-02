@@ -13,6 +13,7 @@
 #include <QVariantMap>
 #include <QStringList>
 #include <QByteArray>
+#include <QDateTime>
 #include <QException>
 #include <QThread>
 #include <QThreadStorage>
@@ -21,6 +22,7 @@
 #include <QJsonArray>
 #include <type_traits>
 #include <tuple>
+#include <thread>
 #include <iostream>
 
 // Использовать для настройки spdlog
@@ -152,7 +154,7 @@ inline QString formatMapStrNums(const QMap<QString, T>& map) {
     auto keys = map.keys();
     for (int i = 0; i < keys.size(); ++i) {
         if (i > 0) result += ", ";
-        result += keys[i] + ": " + QString::number(map[keys[i]]);
+        result += keys[i] + ": " + QString::number(map.value(keys[i]));
     }
     result += "}";
     return result;
@@ -184,15 +186,16 @@ inline QString formatQStringList(const QStringList& list) {
 }
 
 // Форматтер для QByteArray (hex представление)
-inline QString formatQByteArray(const QByteArray& data, bool showHex) {
+inline QString formatQByteArray(const QByteArray& data, bool showHexString) {
     if (data.isEmpty()) {
-        return "b''";
+        return showHexString ? "x''" : "b''";
     }
 
-    if (showHex) {
-        return "b'\\x" + data.toHex() + "'";
+    if (showHexString) {
+        // Непрерывная hex-строка с префиксом x'
+        return "x'" + data.toHex() + "'";
     } else {
-        // Экранирование специальных символов как в Python
+        // Текстовый режим с префиксом b' и экранированием (как в Python)
         QString result = "b'";
         for (char c : data) {
             if (c >= 32 && c <= 126 && c != '\'' && c != '\\') {
@@ -268,25 +271,17 @@ inline QString formatQVariantMap(const QVariantMap& map) {
 
 namespace utils {
 
-// Безопасный конвертер с управлением временными объектами
+// Конвертер
 template<typename T>
 constexpr auto convert_arg(T&& arg) {
     if constexpr (std::is_same_v<std::decay_t<T>, QString>) {
-        if constexpr (std::is_rvalue_reference_v<T&&>) {
-            // Для временных объектов - владеющий контейнер
-            return std::make_shared<QByteArray>(std::forward<T>(arg).toUtf8());
-        } else {
-            // Для обычных переменных - как раньше
-            return std::forward<T>(arg).toUtf8();
-        }
+        // toUtf8() возвращает QByteArray
+        return std::forward<T>(arg).toUtf8();
     } else if constexpr (std::is_same_v<std::decay_t<T>, QByteArray>) {
-        // Аналогично
-        if constexpr (std::is_rvalue_reference_v<T&&>) {
-            return std::make_shared<QByteArray>(std::forward<T>(arg));
-        } else {
-            return std::forward<T>(arg);
-        }
+        // Передаем QByteArray как есть
+        return std::forward<T>(arg);
     } else {
+        // Остальные типы передаем без изменений
         return std::forward<T>(arg);
     }
 }
@@ -295,10 +290,10 @@ constexpr auto convert_arg(T&& arg) {
 template<typename T>
 constexpr auto get_log_arg(const T& arg) {
     if constexpr (std::is_same_v<std::decay_t<T>, QByteArray>) {
+        // Для QByteArray возвращаем указатель на данные
         return arg.constData();
-    } else if constexpr (std::is_same_v<std::decay_t<T>, std::shared_ptr<QByteArray>>) {
-        return arg->constData();
     } else {
+        // Для всех остальных типов возвращаем как есть
         return arg;
     }
 }
@@ -306,8 +301,18 @@ constexpr auto get_log_arg(const T& arg) {
 // Безопасная версия с гарантией времени жизни
 template<typename LoggerFunc, typename... Args>
 constexpr void log_with_conversion(LoggerFunc&& logger_func, Args&&... args) {
+    // Статическая проверка типов
+    static_assert((
+                      (!std::is_pointer_v<std::decay_t<Args>> ||
+                       std::is_same_v<std::decay_t<Args>, const char*> ||
+                       std::is_same_v<std::decay_t<Args>, char*>) && ...
+                      ), "Raw pointers (except char* and const char*) are not safe for logging");
+
+    // Создаем кортеж с конвертированными аргументами
+    // Они будут жить до конца выполнения лямбды
     auto converted = std::make_tuple(convert_arg(std::forward<Args>(args))...);
 
+    // Извлекаем данные из конвертированных аргументов
     std::apply([&](const auto&... safe_args) {
         logger_func(get_log_arg(safe_args)...);
     }, converted);
@@ -327,7 +332,7 @@ inline QString format_exception_name(const char* name) {
 
     // Убираем лишние префиксы
     if (result.startsWith("St")) {
-        result = result.mid(2); // Убираем "St"
+        result = result.mid(2);
     }
 
     return result;
@@ -338,7 +343,7 @@ inline QString get_exception_message(const std::exception& e) {
 }
 
 inline QString get_exception_message(const QException& e) {
-    return "Qt operation";
+    return QString::fromUtf8(e.what());
 }
 
 } // namespace utils
@@ -678,7 +683,7 @@ inline void setup_display_always() {
 }
 
 // ============================================================================
-// УПРАВЛЕНИЕ МОДУЛЯМИ И THREAD-LOCAL ЛОГГЕРАМИ
+// ВРЕМЕННЫЕ ЛОГГЕРЫ
 // ============================================================================
 
 // Для основного логгера "qt" с уровнем из строки
@@ -711,7 +716,7 @@ inline scoped::ScopedLoggerLevel create_scoped_logger(const QString& logger_name
 }
 
 // ============================================================================
-// УПРАВЛЕНИЕ МОДУЛЯМИ И THREAD-LOCAL ЛОГГЕРАМИ
+// THREAD-LOCAL ЛОГГЕРЫ
 // ============================================================================
 
 // Простое thread-local хранилище для модуля
@@ -742,28 +747,21 @@ inline QThreadStorage<std::shared_ptr<spdlog::logger>>& get_logger_storage() {
 
 inline std::shared_ptr<spdlog::logger> get_thread_local_logger() {
     auto& storage = get_logger_storage();
-    auto current_module = get_current_module_name();
-    auto thread_id = QThread::currentThread();
-    auto expected_name = QString("%1_%2")
-                             .arg(current_module)
-                             .arg(reinterpret_cast<quintptr>(thread_id)).toStdString();
 
-    // Если логгер существует но с неправильным именем - пересоздаем
-    if (storage.hasLocalData()) {
-        auto current_logger = storage.localData();
-        if (current_logger->name() != expected_name) {
-            // Пересоздаем с правильным именем
-            auto new_logger = spdlog::default_logger()->clone(expected_name);
-            storage.setLocalData(new_logger);
-            return new_logger;
-        }
-        return current_logger;
+    if (!storage.hasLocalData()) {
+        // Используем хэш std::thread::id для уникальности
+        auto thread_id = std::this_thread::get_id();
+        std::hash<std::thread::id> hasher;
+        auto thread_hash = hasher(thread_id);
+
+        auto current_module = get_current_module_name().toStdString();
+        auto logger_name = current_module + "_" + std::to_string(thread_hash);
+
+        auto logger = spdlog::default_logger()->clone(logger_name);
+        storage.setLocalData(logger);
     }
 
-    // Создаем новый логгер
-    auto logger = spdlog::default_logger()->clone(expected_name);
-    storage.setLocalData(logger);
-    return logger;
+    return storage.localData();
 }
 
 // Алиасы для удобства
@@ -866,7 +864,7 @@ inline bool set_thread_id_pattern() {
 inline void setup_qt_message_handler(bool preserve_original = true) {
     static QtMessageHandler original_handler = nullptr;
 
-    if (preserve_original) {
+    if (preserve_original && !original_handler) {
         original_handler = qInstallMessageHandler(nullptr);
     }
 
@@ -879,19 +877,18 @@ inline void setup_qt_message_handler(bool preserve_original = true) {
             case QtWarningMsg: level = spdlog::level::warn; break;
             case QtCriticalMsg: level = spdlog::level::err; break;
             case QtFatalMsg: level = spdlog::level::critical; break;
+            default: level = spdlog::level::info; break;  // для будущих типов
             }
 
             std::string message = msg.toStdString();
             spdlog::default_logger()->log(level, message);
 
-            // Оригинальный обработчик НЕ вызываем чтобы избежать дублирования
-            // if (original_handler) {
-            //     original_handler(type, context, msg);
-            // }
+            if (type == QtFatalMsg) {
+                std::abort();
+            }
 
         } catch (const std::exception& e) {
             std::cerr << "Qt logging failed: " << e.what() << std::endl;
-            // Фолбэк на оригинальный обработчик
             if (original_handler) {
                 original_handler(type, context, msg);
             }
@@ -1062,7 +1059,7 @@ do { \
 #define QT_LOG_ALWAYS(...) \
         do { \
             auto _logger = spdlog::default_logger(); \
-            /* Принудительно логируем как info, игнорируя текущий уровень */ \
+            /* Принудительно логируем, игнорируя текущий уровень */ \
             qt_spdlog::utils::log_with_conversion( \
                                                    [_logger](auto... converted_args) { \
                                                            _logger->log(spdlog::level::off, converted_args...); \
